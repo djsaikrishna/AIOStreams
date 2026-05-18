@@ -1,12 +1,17 @@
 import { Router } from 'express';
 import {
   APIError,
+  AnalyticsRepository,
+  config as appConfig,
   constants,
   createLogger,
   encryptString,
+  hmac,
   UserRepository,
+  type UserAnalyticsRange,
 } from '@aiostreams/core';
 import { userApiRateLimiter } from '../../middlewares/ratelimit.js';
+import { attachSession, injectAccessKey } from '../../middlewares/auth.js';
 import { resolveUuidAliasForUserApi } from '../../middlewares/alias.js';
 import { createResponse } from '../../utils/responses.js';
 const router: Router = Router();
@@ -14,6 +19,7 @@ const router: Router = Router();
 const logger = createLogger('server');
 
 router.use(userApiRateLimiter);
+router.use(attachSession);
 router.use(resolveUuidAliasForUserApi);
 
 // checking existence of a user
@@ -126,7 +132,7 @@ router.post('/', async (req, res, next) => {
     );
     return;
   }
-  //
+  injectAccessKey(req, config);
   try {
     const { uuid, encryptedPassword } = await UserRepository.createUser(
       config,
@@ -170,6 +176,7 @@ router.put('/', async (req, res, next) => {
 
   try {
     config.uuid = uuid;
+    injectAccessKey(req, config);
     const updatedUser = await UserRepository.updateUser(uuid, password, config);
     res.status(200).json(
       createResponse({
@@ -291,6 +298,72 @@ router.post('/verify', async (req, res, next) => {
     } else {
       next(new APIError(constants.ErrorCode.INTERNAL_SERVER_ERROR));
     }
+  }
+});
+
+/**
+ * Per-user analytics breakdown for the configure-page "Stats" tab. Auth uses
+ * uuid + password (matching the existing GET /); the server hashes the uuid
+ * itself, so clients can never request another user's data. Returns 403 when
+ * the instance owner has disabled analytics globally or per-user.
+ */
+router.get('/analytics', async (req, res, next) => {
+  const uuid = req.uuid || (req.query.uuid as string | undefined);
+  const password = req.query.password;
+  if (typeof uuid !== 'string' || typeof password !== 'string') {
+    next(
+      new APIError(
+        constants.ErrorCode.MISSING_REQUIRED_FIELDS,
+        undefined,
+        'uuid and password must be strings'
+      )
+    );
+    return;
+  }
+
+  if (
+    appConfig.analytics.disabled === true ||
+    appConfig.analytics.userAnalyticsEnabled !== true
+  ) {
+    next(
+      new APIError(
+        constants.ErrorCode.FORBIDDEN,
+        undefined,
+        'Per-user analytics is disabled by the instance owner.'
+      )
+    );
+    return;
+  }
+
+  try {
+    // Throws with the standard credential error if invalid — never reveals
+    // whether the uuid exists.
+    await UserRepository.verifyUser(uuid, password);
+  } catch (error) {
+    if (error instanceof APIError) {
+      next(error);
+    } else {
+      logger.error(error);
+      next(new APIError(constants.ErrorCode.INTERNAL_SERVER_ERROR));
+    }
+    return;
+  }
+
+  const rawRange = (req.query.range as string | undefined) ?? '7d';
+  const range: UserAnalyticsRange = rawRange === '24h' ? '24h' : '7d';
+
+  try {
+    const uuidHash = hmac(uuid);
+    const data = await AnalyticsRepository.userBreakdown(uuidHash, range);
+    res.status(200).json(
+      createResponse({
+        success: true,
+        data,
+      })
+    );
+  } catch (error) {
+    logger.error(error);
+    next(new APIError(constants.ErrorCode.INTERNAL_SERVER_ERROR));
   }
 });
 

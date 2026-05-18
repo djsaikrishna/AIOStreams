@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { Env } from '@aiostreams/core';
+import { config as appConfig } from '@aiostreams/core';
 
 // Resolves alias to UUID for user API routes.
 // If the provided value is not a UUID and matches a known alias, replaces it with the real UUID.
@@ -16,7 +16,7 @@ export function resolveUuidAliasForUserApi(
   if (method === 'GET' || method === 'HEAD') {
     const value = req.query.uuid;
     if (typeof value === 'string' && !uuidRegex.test(value)) {
-      const configuration = Env.ALIASED_CONFIGURATIONS.get(value);
+      const configuration = appConfig.api.aliasedConfigurations[value];
       if (configuration?.uuid) {
         req.uuid = configuration?.uuid;
       }
@@ -24,7 +24,7 @@ export function resolveUuidAliasForUserApi(
   } else if (method === 'PUT' || method === 'DELETE') {
     const value = (req.body ?? {}).uuid;
     if (typeof value === 'string' && !uuidRegex.test(value)) {
-      const configuration = Env.ALIASED_CONFIGURATIONS.get(value);
+      const configuration = appConfig.api.aliasedConfigurations[value];
       if (configuration?.uuid) {
         req.uuid = configuration.uuid;
       }
